@@ -1,6 +1,8 @@
 """Szczecin Theatre (biletyna.pl) extractor implementation using the framework."""
 import json
 import sys
+import random
+import time
 from datetime import datetime
 from urllib.parse import parse_qs, urljoin, urlparse
 
