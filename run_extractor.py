@@ -1,25 +1,32 @@
-"""Szczecin Theatre (biletyna.pl) extractor implementation using the framework."""
+"""Poland-cities (biletyna.pl) extractor implementation using the framework.
+
+Merges what used to be five separate single-city scrapers (Szczecin,
+Wroclaw, Bydgoszcz, Olsztyn, Bialystok) into one — see LISTING_URLS in
+the config. All five are the same biletyna.pl platform, just filtered
+to a different city_id, so one pass of the existing Szczecin scrape
+logic runs once per city and the results are merged.
+"""
 import json
-import sys
 import random
+import sys
 import time
 from datetime import datetime
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import pandas as pd
+from seleniumbase import SB
+
 from scrapers.biletyna_szczecin.biletyna_szczecin_config import (
     BASE_URL,
     COOKIE_ACCEPT_XPATH,
     DEFAULT_CITY,
     DEFAULT_COUNTRY,
     DEFAULT_CURRENCY,
-    LISTING_URL,
+    LISTING_URLS,
     MAX_SCROLL_ATTEMPTS,
     REQUEST_DELAY,
     SCROLL_STABLE_ROUNDS,
 )
-from seleniumbase import SB
-
 from utils.base_extractor import BaseExtractor
 from utils.logger import setup_logger
 from utils.scraping_helpers import (
@@ -37,24 +44,27 @@ logger = setup_logger(__name__, log_to_file=False)
 # widget through SeleniumBase's UC-mode GUI helper, but that click is a real
 # OS-level PyAutoGUI action: it only works in a headed session, never
 # headless. Every page this extractor visits (listing, event, sector) needs
-# the same treatment, since each is a fresh Cloudflare-eligible route.
+# the same treatment, since each is a fresh Cloudflare-eligible route —
+# including each of the five city listings this extractor now cycles through.
 #
-# This extractor is biletyna.pl's Szczecin city listing — same platform
-# as slupsktheatre/lodztheatre/tychytheatre, filtered to a different city.
-# Keep them in sync: fixes to the Cloudflare/seat-map handling here almost
-# certainly apply there too (and vice versa). In particular, some venues
-# (confirmed on tychytheatre's Teatr Maly w Tychach) render their seat grid
-# directly on the event page with no separate /event/sector/id/ URL at all
-# — _find_sector_urls below falls back to treating the event page itself as
-# the lone sector when that happens, instead of reporting no seat map.
+# This extractor covers five biletyna.pl city listings directly (Szczecin,
+# Wroclaw, Bydgoszcz, Olsztyn, Bialystok — see LISTING_URLS) — same platform
+# as slupsktheatre/lodztheatre/tychytheatre, which cover other cities on the
+# same site and haven't been folded in here. Keep them in sync: fixes to the
+# Cloudflare/seat-map handling here almost certainly apply there too (and
+# vice versa). In particular, some venues (confirmed on tychytheatre's Teatr
+# Maly w Tychach) render their seat grid directly on the event page with no
+# separate /event/sector/id/ URL at all — _find_sector_urls below falls back
+# to treating the event page itself as the lone sector when that happens,
+# instead of reporting no seat map.
 STATUS_AVAILABLE = "10"
 
 
 class BiletynaSzczecinExtractor(BaseExtractor):
-    """Extractor for Szczecin theatre listings on biletyna.pl."""
+    """Extractor for biletyna.pl theatre listings across five Polish cities."""
 
     def __init__(self, **kwargs):
-        """Initialize the Szczecin Theatre extractor with default settings."""
+        """Initialize the merged biletyna.pl multi-city extractor with default settings."""
         super().__init__(
             site_id="biletyna_szczecin",
             **kwargs,
@@ -62,18 +72,7 @@ class BiletynaSzczecinExtractor(BaseExtractor):
         self.sb = None
 
     def _open_biletyna_page(self, sb, url, label):
-        """Load a biletyna.pl URL, solving Cloudflare + cookie consent.
-
-        Clears cookies and reopens with UC mode's reconnect helper, then —
-        if the Turnstile "Just a moment..." interstitial is still showing —
-        clears cookies again and clicks it through via ``uc_gui_click_cf``.
-        Finishes by accepting the Cookiebot banner (it re-appears on some
-        navigations, not just the first) and doing a human-like scroll.
-
-        Returns True once the page looks clear of both, False if the
-        challenge is still showing afterwards (callers should treat that
-        performance/sector as unscraped rather than trust the DOM).
-        """
+        """Load a biletyna.pl URL, solving Cloudflare + cookie consent."""
         try:
             sb.driver.delete_all_cookies()
         except Exception:
@@ -86,10 +85,10 @@ class BiletynaSzczecinExtractor(BaseExtractor):
             return False
 
         if (
-                "captcha" in sb.get_current_url().lower()
-                or "distil" in sb.get_page_source().lower()
-                or "just a moment" in sb.get_page_source().lower()
-            ):
+            "captcha" in sb.get_current_url().lower()
+            or "distil" in sb.get_page_source().lower()
+            or "just a moment" in sb.get_page_source().lower()
+        ):
             self.custom_logger.info(
                 f"Cloudflare challenge on {label} — clearing cookies and solving captcha"
             )
@@ -98,10 +97,10 @@ class BiletynaSzczecinExtractor(BaseExtractor):
                 sb.driver.delete_all_cookies()
             except Exception:
                 pass
-            #sb.uc_gui_click_cf()
+            # sb.uc_gui_click_cf()
             sb.uc_gui_handle_captcha()
             time.sleep(random.uniform(2, 4))
-            #sb.sleep(4)
+            # sb.sleep(4)
 
         accept_cookies(
             sb.driver,
@@ -113,28 +112,6 @@ class BiletynaSzczecinExtractor(BaseExtractor):
         sb.sleep(REQUEST_DELAY)
 
         return "just a moment" not in sb.get_page_source().lower()
-
-
-
-    def safe_get(self, sb, url, wait=10):
-        try:
-            # self.custom_logger.info("Loading URL: %s", url)
-            sb.uc_open_with_reconnect(url, reconnect_time=wait if wait > 4 else 4)
-            if (
-                "captcha" in sb.get_current_url().lower()
-                or "distil" in sb.get_page_source().lower()
-            ):
-                self.custom_logger.warning("Bot protection detected. Solving...")
-                sb.uc_gui_handle_captcha()
-                time.sleep(random.uniform(2, 4))
-            self.custom_logger.info("Page loaded successfully: %s", url)
-            return True
-        except Exception as e:
-            self.custom_logger.error(
-                "Failed to load page: %s | Exception: %s", url, repr(e)
-            )
-            return None
-
 
     @staticmethod
     def _load_item_list(script_text):
@@ -154,59 +131,107 @@ class BiletynaSzczecinExtractor(BaseExtractor):
             return payload
         return None
 
-    def _collect_performance_events(self, sb):
-        """Load the listing page and collect every TheaterEvent entry.
+    @staticmethod
+    def _city_from_listing_url(listing_url):
+        """Pull the human-readable city name out of a listing URL.
 
-        The page renders one schema.org ItemList of TheaterEvent items per
-        performance instance, then lazy-loads more as the visitor scrolls.
-        Scrolling stops once the collected performance count stops growing
-        for SCROLL_STABLE_ROUNDS consecutive rounds.
+        biletyna.pl listing URLs are shaped ``/spektakl/<City>?city_id=<id>``
+        (e.g. "Szczecin", "Bialystok"). Used as a log label for the current
+        city, and as the fallback city on a show record whose own schema.org
+        address is ever missing ``addressLocality``.
         """
-        if not self._open_biletyna_page(sb, LISTING_URL, "listing page"):
-            self.custom_logger.warning(
-                "Cloudflare challenge on listing page never cleared"
+        path = urlparse(listing_url).path
+        city = path.rstrip("/").rsplit("/", 1)[-1]
+        return city or DEFAULT_CITY
+
+    def _collect_performance_events(self, sb):
+        """Loop over every configured city listing and collect every
+        TheaterEvent entry across all of them.
+
+        Each city listing renders one schema.org ItemList of TheaterEvent
+        items per performance instance, then lazy-loads more as the visitor
+        scrolls. Scrolling for a given city stops once that city's collected
+        performance count stops growing for SCROLL_STABLE_ROUNDS consecutive
+        rounds, then the next city listing starts fresh. All cities share one
+        deduplicated map keyed by (event_url, start_date) — this also guards
+        against the same show appearing on more than one city's listing.
+        """
+        performance_events_by_key = {}
+
+        for listing_index, listing_url in enumerate(LISTING_URLS, start=1):
+            city_name = self._city_from_listing_url(listing_url)
+            self.custom_logger.info(
+                f"[City {listing_index}/{len(LISTING_URLS)}] {city_name}: "
+                f"loading listing — {listing_url}"
             )
 
-        performance_events_by_key = {}
-        previous_event_count = 0
-        stable_rounds = 0
-        scroll_attempt = 0
+            if not self._open_biletyna_page(
+                sb, listing_url, f"{city_name} listing page"
+            ):
+                self.custom_logger.warning(
+                    f"[City {listing_index}/{len(LISTING_URLS)}] {city_name}: "
+                    "Cloudflare challenge never cleared — skipping this city"
+                )
+                continue
 
-        while (
-            stable_rounds < SCROLL_STABLE_ROUNDS
-            and scroll_attempt <= MAX_SCROLL_ATTEMPTS
-        ):
-            soup = sb.get_beautiful_soup()
-            for script_tag in soup.find_all("script", type="application/ld+json"):
-                item_list = self._load_item_list(script_tag.get_text())
-                if item_list is None:
-                    continue
-                for list_entry in item_list.get("itemListElement", []):
-                    theater_event = list_entry.get("item", {})
-                    event_url = theater_event.get("url")
-                    start_date = theater_event.get("startDate")
-                    if not event_url or not start_date:
+            # Track this city's own event count separately from the running
+            # cross-city total, so "stable" reflects this city's scroll
+            # having stopped growing — not the (already-large) global count.
+            events_before_this_city = len(performance_events_by_key)
+            previous_city_event_count = 0
+            stable_rounds = 0
+            scroll_attempt = 0
+
+            while (
+                stable_rounds < SCROLL_STABLE_ROUNDS
+                and scroll_attempt <= MAX_SCROLL_ATTEMPTS
+            ):
+                soup = sb.get_beautiful_soup()
+                for script_tag in soup.find_all("script", type="application/ld+json"):
+                    item_list = self._load_item_list(script_tag.get_text())
+                    if item_list is None:
                         continue
-                    performance_events_by_key[(event_url, start_date)] = theater_event
+                    for list_entry in item_list.get("itemListElement", []):
+                        theater_event = list_entry.get("item", {})
+                        event_url = theater_event.get("url")
+                        start_date = theater_event.get("startDate")
+                        if not event_url or not start_date:
+                            continue
+                        theater_event.setdefault("_fallback_city", city_name)
+                        performance_events_by_key[
+                            (event_url, start_date)
+                        ] = theater_event
 
-            if len(performance_events_by_key) == previous_event_count:
-                stable_rounds += 1
-            else:
-                stable_rounds = 0
-            previous_event_count = len(performance_events_by_key)
+                current_city_event_count = (
+                    len(performance_events_by_key) - events_before_this_city
+                )
+                if current_city_event_count == previous_city_event_count:
+                    stable_rounds += 1
+                else:
+                    stable_rounds = 0
+                previous_city_event_count = current_city_event_count
 
-            human_scroll(sb)
-            sb.sleep(REQUEST_DELAY)
-            scroll_attempt += 1
+                human_scroll(sb)
+                sb.sleep(REQUEST_DELAY)
+                scroll_attempt += 1
+
+            self.custom_logger.info(
+                f"[City {listing_index}/{len(LISTING_URLS)}] {city_name}: "
+                f"{previous_city_event_count} performance instance(s) found "
+                f"({len(performance_events_by_key)} total across all cities so far)"
+            )
 
         return list(performance_events_by_key.values())
 
     @staticmethod
     def _clean_venue_url(raw_url):
-        """Strip the per-performance tracking query string from a show URL."""
+        """Strip the per-performance tracking query string from a show URL,
+        and a trailing slash so "/spektakl/x" and "/spektakl/x/" — which are
+        the same page — group under one dict key instead of two.
+        """
         if not raw_url:
             return raw_url
-        return raw_url.split("?")[0]
+        return raw_url.split("?")[0].rstrip("/")
 
     @staticmethod
     def _extract_event_id(raw_url):
@@ -236,7 +261,15 @@ class BiletynaSzczecinExtractor(BaseExtractor):
         address_info = location.get("address", {}) or {}
         street_address = address_info.get("streetAddress")
         postal_code = address_info.get("postalCode")
-        locality = address_info.get("addressLocality") or DEFAULT_CITY
+        # addressLocality is almost always present, but if it's ever missing
+        # fall back to the city of the listing this event was collected
+        # from (tagged in _collect_performance_events) rather than a single
+        # hardcoded city — this scraper now covers five cities at once.
+        locality = (
+            address_info.get("addressLocality")
+            or theater_event.get("_fallback_city")
+            or DEFAULT_CITY
+        )
         address_line = ", ".join(
             part
             for part in (street_address, f"{postal_code} {locality}".strip())
@@ -405,6 +438,9 @@ class BiletynaSzczecinExtractor(BaseExtractor):
         performance, not just what's currently on sale.
         """
         event_url = f"{BASE_URL}/event/view/id/{event_id}"
+
+        self.custom_logger.info(f"Starting seat-map scraping for event ID={event_id}")
+
         if not self._open_biletyna_page(sb, event_url, f"event {event_id}"):
             return None, None
 
@@ -425,6 +461,11 @@ class BiletynaSzczecinExtractor(BaseExtractor):
             )
             seats.extend(sector_seats)
             capacity += sector_capacity
+
+        self.custom_logger.info(
+            f"Seat-map result for event ID={event_id}: "
+            f"{len(seats)} seat(s) on sale, capacity={capacity}"
+        )
         return seats, capacity
 
     def _collect_seat_maps(self, sb, show_record):
@@ -432,6 +473,11 @@ class BiletynaSzczecinExtractor(BaseExtractor):
         storing results on the accumulator for _finalize_show_record to
         prefer over the General Admission fallback.
         """
+
+        self.custom_logger.info(
+            f"Starting seat-map collection for show: " f"{show_record['title']!r}"
+        )
+
         seat_pricing_by_performance = {}
         for performance_key, event_id in show_record[
             "event_ids_by_performance"
@@ -446,6 +492,10 @@ class BiletynaSzczecinExtractor(BaseExtractor):
                 show_record["real_capacities"].append(capacity)
             if seats:
                 seat_pricing_by_performance[performance_key] = seats
+                self.custom_logger.info(
+                    f"  {show_record['title']!r} @ {performance_key}: "
+                    f"{len(seats)} seat(s) found, capacity={capacity}"
+                )
             else:
                 self.custom_logger.warning(
                     f"No real seat map for {show_record['title']!r} @ "
@@ -453,6 +503,74 @@ class BiletynaSzczecinExtractor(BaseExtractor):
                     "falling back to General Admission"
                 )
         show_record["seat_pricing_by_performance"] = seat_pricing_by_performance
+
+    def _dedupe_shows(self, shows_by_venue_url):
+        """Collapse shows that are really the same production at the same
+        venue but ended up under two different venue_url keys.
+
+        Grouping by venue_url in extract() already prevents most duplicates,
+        but merging five separate city listings into one run opens a new
+        gap: biletyna.pl can mint a fresh numeric show id for what a viewer
+        would recognise as the identical show/venue (e.g. a re-listing, or
+        the show turning up on more than one city's page under a slightly
+        different URL). Dedupe on (title, venue) case-insensitively instead;
+        the first-seen venue_url is kept and absorbs the duplicate's
+        performances/event ids rather than silently dropping that data.
+        """
+        deduped = {}
+        kept_venue_url_by_identity = {}
+
+        for venue_url, show_record in shows_by_venue_url.items():
+            title_norm = (show_record["title"] or "").strip().casefold()
+            venue_norm = (show_record["venue"] or "").strip().casefold()
+            identity_key = (title_norm, venue_norm)
+
+            kept_venue_url = kept_venue_url_by_identity.get(identity_key)
+            if kept_venue_url is None:
+                kept_venue_url_by_identity[identity_key] = venue_url
+                deduped[venue_url] = show_record
+                continue
+
+            self.custom_logger.info(
+                f"Duplicate show detected: {show_record['title']!r} — "
+                f"merging {venue_url} into {kept_venue_url}"
+            )
+            kept_record = deduped[kept_venue_url]
+            for performance in show_record["upcoming_performances"]:
+                if performance not in kept_record["upcoming_performances"]:
+                    kept_record["upcoming_performances"].append(performance)
+            kept_record["event_ids_by_performance"].update(
+                show_record["event_ids_by_performance"]
+            )
+            kept_record["remaining_capacities"].extend(
+                show_record["remaining_capacities"]
+            )
+            kept_record["real_capacities"].extend(show_record["real_capacities"])
+            if kept_record["price"] is None:
+                kept_record["price"] = show_record["price"]
+
+        removed_count = len(shows_by_venue_url) - len(deduped)
+        if removed_count:
+            self.custom_logger.info(f"Removed {removed_count} duplicate show(s)")
+        return deduped
+
+    def _log_show_summary(self, record):
+        """Log one plain 'label: value' line per field for a finalized show,
+        so a run is easy to grep/eyeball without digging through the raw
+        JSON output.
+        """
+        seat_pricing = record.get("seat_pricing") or {}
+        total_seats_found = sum(len(seats) for seats in seat_pricing.values())
+
+        self.custom_logger.info(f"title: {record['title']}")
+        self.custom_logger.info(f"open dates: {record['open_date']}")
+        self.custom_logger.info(f"close dates: {record['close_date']}")
+        self.custom_logger.info(f"venue: {record['venue']}")
+        self.custom_logger.info(f"capacity: {record['capacity']}")
+        self.custom_logger.info(f"seats: {total_seats_found}")
+        self.custom_logger.info(f"city: {record['city']}")
+        self.custom_logger.info(f"address: {record['address']}")
+        self.custom_logger.info(f"currency: {record['currency']}")
 
     def _finalize_show_record(self, show_record):
         """Turn a per-show accumulator into the final output row."""
@@ -510,21 +628,24 @@ class BiletynaSzczecinExtractor(BaseExtractor):
         }
 
     def extract(self) -> bytes:
-        """Extract raw data from the Częstochowa theatre listing on biletyna.pl."""
-        self.custom_logger.info(f"Starting extraction from {LISTING_URL}")
+        """Extract raw data from all configured biletyna.pl city listings."""
+        self.custom_logger.info(
+            f"Starting extraction from {len(LISTING_URLS)} city listing(s): "
+            + ", ".join(self._city_from_listing_url(u) for u in LISTING_URLS)
+        )
 
         # headless=False + uc=True is required, not a preference: the
         # Cloudflare Turnstile widget only ever resolves through
         # uc_gui_click_cf()'s real OS-level GUI click. ad_block=False +
         # cft=True are the existing Windows-Chrome-launch fixes.
         with SB(
-            headless=True, 
-            uc=True, 
-            ad_block=False, 
+            headless=True,
+            uc=True,
+            ad_block=False,
             cft=True,
             locale="en-US",
             browser="chrome",
-            ) as sb:
+        ) as sb:
             try:
                 sb.driver.maximize_window()
             except Exception:
@@ -532,9 +653,13 @@ class BiletynaSzczecinExtractor(BaseExtractor):
 
             theater_events = self._collect_performance_events(sb)
             self.custom_logger.info(
-                f"Found {len(theater_events)} performance instance(s)"
+                f"Found {len(theater_events)} performance instance(s) "
+                f"across {len(LISTING_URLS)} cities"
             )
 
+            # Group performance instances into shows by venue_url (a show
+            # can have many performances but shares one venue_url), capped
+            # globally across all cities combined in local_test mode.
             shows_by_venue_url = {}
             for theater_event in theater_events:
                 title = theater_event.get("name")
@@ -543,7 +668,6 @@ class BiletynaSzczecinExtractor(BaseExtractor):
                     continue
 
                 if venue_url not in shows_by_venue_url:
-                    
                     if (
                         self.local_test
                         and self.show_count is not None
@@ -559,18 +683,35 @@ class BiletynaSzczecinExtractor(BaseExtractor):
                     f"Local test mode — limited to {self.show_count} show(s)"
                 )
 
-            for show_record in shows_by_venue_url.values():
+            shows_by_venue_url = self._dedupe_shows(shows_by_venue_url)
+
+            total_shows = len(shows_by_venue_url)
+            self.custom_logger.info(
+                f"Grouped into {total_shows} distinct show(s) — "
+                "starting seat-map collection"
+            )
+
+            # Finalize and log each show right after its own seat maps are
+            # collected, instead of collecting seat maps for every show
+            # first and only then logging summaries — so progress is
+            # visible show-by-show instead of arriving in one batch at the
+            # very end of the run.
+            all_events = []
+            for show_index, show_record in enumerate(
+                shows_by_venue_url.values(), start=1
+            ):
                 if not show_record["upcoming_performances"]:
                     continue
+                self.custom_logger.info(
+                    f"[Show {show_index}/{total_shows}] "
+                    f"{show_record['title']!r} ({show_record['city']})"
+                )
                 self._collect_seat_maps(sb, show_record)
 
-        all_events = []
-        for show_record in shows_by_venue_url.values():
-            if not show_record["upcoming_performances"]:
-                continue
-            event_metadata = self._finalize_show_record(show_record)
-            all_events.append(event_metadata)
-            self.log_record(event_metadata)
+                event_metadata = self._finalize_show_record(show_record)
+                all_events.append(event_metadata)
+                self.log_record(event_metadata)
+                self._log_show_summary(event_metadata)
 
         combined_data = json.dumps(all_events, indent=2)
         self.custom_logger.info(f"Extraction completed. Total shows: {len(all_events)}")
