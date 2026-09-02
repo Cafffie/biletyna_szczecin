@@ -1,8 +1,22 @@
-"""Configuration for the Szczecin Theatre (biletyna.pl) scraper."""
+"""Configuration for the merged Poland-cities (biletyna.pl) scraper.
+
+Originally scraped Szczecin only; now covers every city listing below in
+a single run. Each URL is the same biletyna.pl listing page shape
+(``/spektakl/<City>?city_id=<id>``), just filtered to a different city —
+add another city here to bring it into the merged run.
+"""
 
 BASE_URL = "https://biletyna.pl"
-LISTING_URL = "https://biletyna.pl/spektakl/Szczecin?city_id=106"
+LISTING_URLS = [
+    "https://biletyna.pl/spektakl/Szczecin?city_id=106",
+    "https://biletyna.pl/spektakl/Wroclaw?city_id=46",
+    "https://biletyna.pl/spektakl/Bydgoszcz?city_id=2",
+    "https://biletyna.pl/spektakl/Olsztyn?city_id=23",
+    "https://biletyna.pl/spektakl/Bialystok?city_id=78",
+]
 
+# Last-resort city label — only used if a listing URL's city segment can't
+# be parsed out of its path (should never happen; see _city_from_listing_url).
 DEFAULT_CITY = "Szczecin"
 DEFAULT_COUNTRY = "Poland"
 DEFAULT_CURRENCY = "PLN"
